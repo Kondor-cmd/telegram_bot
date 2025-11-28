@@ -1,108 +1,116 @@
 import logging
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler
+import requests
+import time
 
 # Настройки
 BOT_TOKEN = "8337387211:AAE8y9hJ4T8jq4-F3BqhAoGB9IdFVYmHLXg"
 ADMIN_CHAT_ID = "951804313"  # Замените на ваш ID из @userinfobot
 
-# Состояния для ConversationHandler
-NAME, SERVICE, CONTACT = range(3)
-
 # Включение логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Команда /start
-def start(update, context):
-    update.message.reply_text(
-        "👋 Привет! Я бот для приема заявок на услуги.\n"
-        "Нажмите /order чтобы оставить заявку"
-    )
+# Хранилище состояний пользователей
+user_states = {}
 
-# Начало оформления заявки
-def order(update, context):
-    update.message.reply_text("📝 Как вас зовут?")
-    return NAME
-
-# Получение имени
-def get_name(update, context):
-    context.user_data['name'] = update.message.text
-    update.message.reply_text("💼 Какая услуга вас интересует?")
-    return SERVICE
-
-# Получение услуги
-def get_service(update, context):
-    context.user_data['service'] = update.message.text
-    update.message.reply_text("📞 Укажите ваш контакт (телефон, email или Telegram):")
-    return CONTACT
-
-# Получение контакта и отправка заявки
-def get_contact(update, context):
-    context.user_data['contact'] = update.message.text
-    
-    # Формируем заявку
-    application = f"""
-🎯 НОВАЯ ЗАЯВКА:
-├ Имя: {context.user_data['name']}
-├ Услуга: {context.user_data['service']}
-└ Контакт: {context.user_data['contact']}
-    
-От пользователя: @{update.message.from_user.username}
-ID: {update.message.from_user.id}
-    """
-    
-    # Отправляем заявку администратору
+def send_message(chat_id, text):
+    """Отправка сообщения через Telegram API"""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    data = {
+        "chat_id": chat_id,
+        "text": text
+    }
     try:
-        context.bot.send_message(chat_id=ADMIN_CHAT_ID, text=application)
+        response = requests.post(url, data=data)
+        return response.json()
     except Exception as e:
-        logger.error(f"Ошибка отправки заявки: {e}")
-    
-    # Подтверждаем пользователю
-    update.message.reply_text(
-        "✅ Спасибо! Ваша заявка принята.\n"
-        "Мы свяжемся с вами в ближайшее время."
-    )
-    
-    return ConversationHandler.END
+        logger.error(f"Ошибка отправки сообщения: {e}")
+        return None
 
-# Отмена заявки
-def cancel(update, context):
-    update.message.reply_text("❌ Заявка отменена")
-    return ConversationHandler.END
+def get_updates(offset=None):
+    """Получение обновлений от Telegram"""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+    params = {"timeout": 30, "offset": offset}
+    try:
+        response = requests.get(url, params=params)
+        return response.json()
+    except Exception as e:
+        logger.error(f"Ошибка получения обновлений: {e}")
+        return None
 
-# Обработка ошибок
-def error(update, context):
-    logger.warning(f'Update {update} caused error {context.error}')
+def process_message(chat_id, text, username):
+    """Обработка входящих сообщений"""
+    if text == "/start":
+        send_message(chat_id, "👋 Привет! Я бот для приема заявок на услуги.\nНапишите 'заявка' чтобы оставить заявку")
+        user_states[chat_id] = None
+    
+    elif text.lower() in ["заявка", "/order"]:
+        send_message(chat_id, "📝 Как вас зовут?")
+        user_states[chat_id] = "waiting_name"
+    
+    elif user_states.get(chat_id) == "waiting_name":
+        user_states[chat_id] = {"name": text, "step": "waiting_service"}
+        send_message(chat_id, "💼 Какая услуга вас интересует?")
+    
+    elif user_states.get(chat_id) and user_states[chat_id].get("step") == "waiting_service":
+        user_states[chat_id]["service"] = text
+        user_states[chat_id]["step"] = "waiting_contact"
+        send_message(chat_id, "📞 Укажите ваш контакт (телефон, email или Telegram):")
+    
+    elif user_states.get(chat_id) and user_states[chat_id].get("step") == "waiting_contact":
+        user_data = user_states[chat_id]
+        
+        # Формируем заявку
+        application = f"""
+🎯 НОВАЯ ЗАЯВКА:
+├ Имя: {user_data['name']}
+├ Услуга: {user_data['service']}
+└ Контакт: {text}
+        
+От пользователя: @{username}
+ID: {chat_id}
+        """
+        
+        # Отправляем заявку администратору
+        send_message(ADMIN_CHAT_ID, application)
+        
+        # Подтверждаем пользователю
+        send_message(chat_id, "✅ Спасибо! Ваша заявка принята.\nМы свяжемся с вами в ближайшее время.")
+        
+        # Сбрасываем состояние
+        user_states[chat_id] = None
 
 def main():
-    # Создаем Updater и передаем ему токен бота
-    updater = Updater(BOT_TOKEN, use_context=True)
-    
-    # Получаем диспетчер для регистрации обработчиков
-    dp = updater.dispatcher
-    
-    # Обработчик диалога заявки
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('order', order)],
-        states={
-            NAME: [MessageHandler(Filters.text, get_name)],
-            SERVICE: [MessageHandler(Filters.text, get_service)],
-            CONTACT: [MessageHandler(Filters.text, get_contact)]
-        },
-        fallbacks=[CommandHandler('cancel', cancel)]
-    )
-    
-    # Добавляем обработчики
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(conv_handler)
-    dp.add_error_handler(error)
-    
-    # Запускаем бота
-    updater.start_polling()
     logger.info("Бот запущен!")
-    updater.idle()
+    last_update_id = None
+    
+    while True:
+        try:
+            # Получаем обновления
+            updates = get_updates(last_update_id)
+            
+            if updates and updates.get("ok"):
+                for update in updates["result"]:
+                    last_update_id = update["update_id"] + 1
+                    
+                    if "message" in update and "text" in update["message"]:
+                        message = update["message"]
+                        chat_id = message["chat"]["id"]
+                        text = message["text"]
+                        username = message["from"].get("username", "не указан")
+                        
+                        # Обрабатываем сообщение
+                        process_message(chat_id, text, username)
+            
+            # Пауза между запросами
+            time.sleep(1)
+            
+        except Exception as e:
+            logger.error(f"Ошибка в основном цикле: {e}")
+            time.sleep(5)
 
 if __name__ == '__main__':
     main()
+
 
 
