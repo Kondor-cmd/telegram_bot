@@ -1,7 +1,5 @@
 import logging
-import os
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, ConversationHandler
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler
 
 # Настройки
 BOT_TOKEN = "8337387211:AAE8y9hJ4T8jq4-F3BqhAoGB9IdFVYmHLXg"
@@ -11,38 +9,35 @@ ADMIN_CHAT_ID = "951804313"  # Замените на ваш ID из @userinfobot
 NAME, SERVICE, CONTACT = range(3)
 
 # Включение логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
-    level=logging.INFO
-)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Команда /start
-def start(update: Update, context: CallbackContext):
+def start(update, context):
     update.message.reply_text(
         "👋 Привет! Я бот для приема заявок на услуги.\n"
         "Нажмите /order чтобы оставить заявку"
     )
 
 # Начало оформления заявки
-def order(update: Update, context: CallbackContext):
+def order(update, context):
     update.message.reply_text("📝 Как вас зовут?")
     return NAME
 
 # Получение имени
-def get_name(update: Update, context: CallbackContext):
+def get_name(update, context):
     context.user_data['name'] = update.message.text
     update.message.reply_text("💼 Какая услуга вас интересует?")
     return SERVICE
 
 # Получение услуги
-def get_service(update: Update, context: CallbackContext):
+def get_service(update, context):
     context.user_data['service'] = update.message.text
     update.message.reply_text("📞 Укажите ваш контакт (телефон, email или Telegram):")
     return CONTACT
 
 # Получение контакта и отправка заявки
-def get_contact(update: Update, context: CallbackContext):
+def get_contact(update, context):
     context.user_data['contact'] = update.message.text
     
     # Формируем заявку
@@ -71,12 +66,12 @@ ID: {update.message.from_user.id}
     return ConversationHandler.END
 
 # Отмена заявки
-def cancel(update: Update, context: CallbackContext):
+def cancel(update, context):
     update.message.reply_text("❌ Заявка отменена")
     return ConversationHandler.END
 
 # Обработка ошибок
-def error(update: Update, context: CallbackContext):
+def error(update, context):
     logger.warning(f'Update {update} caused error {context.error}')
 
 def main():
@@ -90,9 +85,9 @@ def main():
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('order', order)],
         states={
-            NAME: [MessageHandler(Filters.text & ~Filters.command, get_name)],
-            SERVICE: [MessageHandler(Filters.text & ~Filters.command, get_service)],
-            CONTACT: [MessageHandler(Filters.text & ~Filters.command, get_contact)]
+            NAME: [MessageHandler(Filters.text, get_name)],
+            SERVICE: [MessageHandler(Filters.text, get_service)],
+            CONTACT: [MessageHandler(Filters.text, get_contact)]
         },
         fallbacks=[CommandHandler('cancel', cancel)]
     )
@@ -104,8 +99,10 @@ def main():
     
     # Запускаем бота
     updater.start_polling()
+    logger.info("Бот запущен!")
     updater.idle()
 
 if __name__ == '__main__':
     main()
+
 
