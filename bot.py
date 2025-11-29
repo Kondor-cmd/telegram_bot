@@ -4,8 +4,6 @@ import re
 import time
 from flask import Flask
 import threading
-import json
-import os
 
 # Создаем Flask приложение для порта
 app = Flask(__name__)
@@ -31,32 +29,39 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 user_states = {}
-
-# Файл для сохранения last_update_id
-STATE_FILE = "bot_state.json"
-
-def save_state(last_update_id):
-    """Сохраняет состояние бота"""
-    try:
-        with open(STATE_FILE, 'w') as f:
-            json.dump({"last_update_id": last_update_id}, f)
-    except Exception as e:
-        logger.error(f"Ошибка сохранения состояния: {e}")
-
-def load_state():
-    """Загружает состояние бота"""
-    try:
-        if os.path.exists(STATE_FILE):
-            with open(STATE_FILE, 'r') as f:
-                state = json.load(f)
-                return state.get("last_update_id", None)
-    except Exception as e:
-        logger.error(f"Ошибка загрузки состояния: {e}")
-    return None
+processed_updates = set()  # Множество для отслеживания обработанных сообщений
 
 def validate_phone(phone):
-    pattern = r'^(\+7|8)[\s\-]?\(?[489][0-9]{2}\)?[\s\-]?[0-9]{3}[\s\-]?[0-9]{2}[\s\-]?[0-9]{2}$'
-    return re.match(pattern, phone.strip()) is not None
+    """Проверка номера телефона (без пробелов)"""
+    # Убираем все пробелы, скобки, дефисы
+    clean_phone = re.sub(r'[\s\-\(\)\+]', '', phone.strip())
+    
+    # Проверяем российские номера:
+    # +79991234567, 89991234567, 9991234567
+    pattern = r'^(\+7|8)?[489][0-9]{9}$'
+    
+    # Если номер без кода страны, добавляем 8
+    if len(clean_phone) == 10 and clean_phone[0] in '489':
+        clean_phone = '8' + clean_phone
+    
+    return re.match(pattern, clean_phone) is not None
+
+def format_phone(phone):
+    """Форматирует номер телефона для красивого отображения"""
+    clean_phone = re.sub(r'[\s\-\(\)\+]', '', phone.strip())
+    
+    # Если номер без кода страны, добавляем 8
+    if len(clean_phone) == 10 and clean_phone[0] in '489':
+        clean_phone = '8' + clean_phone
+    
+    # Форматируем: +7 (999) 123-45-67
+    if len(clean_phone) == 11:
+        if clean_phone.startswith('8'):
+            return f"+7 ({clean_phone[1:4]}) {clean_phone[4:7]}-{clean_phone[7:9]}-{clean_phone[9:]}"
+        elif clean_phone.startswith('7'):
+            return f"+7 ({clean_phone[1:4]}) {clean_phone[4:7]}-{clean_phone[7:9]}-{clean_phone[9:]}"
+    
+    return phone  # Возвращаем как есть если не удалось отформатировать
 
 def validate_name(name):
     if len(name.strip()) < 2 or len(name.strip()) > 30:
@@ -91,9 +96,7 @@ def send_message(chat_id, text, parse_mode=None):
 
 def get_updates(offset=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-    params = {"timeout": 30}
-    if offset:
-        params["offset"] = offset
+    params = {"timeout": 30, "offset": offset}
         
     try:
         response = requests.get(url, params=params, timeout=35)
@@ -102,9 +105,22 @@ def get_updates(offset=None):
         logger.error(f"Ошибка получения обновлений: {e}")
         return None
 
-def process_message(chat_id, text, username, first_name):
+def process_message(chat_id, text, username, first_name, update_id):
+    # Пропускаем уже обработанные сообщения
+    if update_id in processed_updates:
+        return
+        
+    # Добавляем в обработанные
+    processed_updates.add(update_id)
+    
+    # Ограничиваем размер множества (чтобы не росло бесконечно)
+    if len(processed_updates) > 1000:
+        # Оставляем только последние 500
+        global processed_updates
+        processed_updates = set(list(processed_updates)[-500:])
+    
     # Пропускаем служебные команды от самого бота
-    if "✅" in text or "❌" in text or "📝" in text or "💼" in text or "📞" in text:
+    if any(emoji in text for emoji in ["✅", "❌", "📝", "💼", "📞", "👋"]):
         return
         
     if text == "/start":
@@ -133,19 +149,19 @@ def process_message(chat_id, text, username, first_name):
         
         user_states[chat_id]["service"] = text.strip()
         user_states[chat_id]["step"] = "waiting_phone"
-        send_message(chat_id, "📞 *Укажите ваш номер телефона:*\n\nФормат: +7XXX XXX XX XX или 8XXX XXX XX XX\n\nПример: +7 999 123 45 67", parse_mode="Markdown")
+        send_message(chat_id, "📞 *Укажите ваш номер телефона:*\n\nФормат: +79991234567 или 89991234567\n\nПример: +79991234567", parse_mode="Markdown")
     
     elif user_states.get(chat_id) and user_states[chat_id].get("step") == "waiting_phone":
         if not validate_phone(text):
-            send_message(chat_id, "❌ *Неверный формат номера телефона!*\n\nПожалуйста, укажите номер в правильном формате:\n\n• +7 999 123 45 67\n• 89991234567\n• +7(999)123-45-67", parse_mode="Markdown")
+            send_message(chat_id, "❌ *Неверный формат номера телефона!*\n\nПожалуйста, укажите номер в правильном формате:\n\n• +79991234567\n• 89991234567\n• 9991234567", parse_mode="Markdown")
             return
         
         user_data = user_states[chat_id]
-        phone = text.strip()
+        formatted_phone = format_phone(text)
         
         # Экранируем данные пользователя для Markdown
         safe_name = escape_markdown(user_data['name'])
-        safe_phone = escape_markdown(phone)
+        safe_phone = escape_markdown(formatted_phone)
         safe_service = escape_markdown(user_data['service'])
         safe_username = escape_markdown(username if username else "не указан")
         safe_first_name = escape_markdown(first_name if first_name else "не указано")
@@ -175,7 +191,7 @@ def process_message(chat_id, text, username, first_name):
             application_plain = f"""🎯 НОВАЯ ЗАЯВКА
 
 👤 Клиент: {user_data['name']}
-📱 Телефон: {phone}
+📱 Телефон: {formatted_phone}
 💼 Услуга: {user_data['service']}
 👤 Telegram: @{username} ({first_name})
 🆔 User ID: {chat_id}
@@ -204,20 +220,10 @@ def main():
     
     logger.info("Бот запущен! Веб-сервер работает на порту 10000")
     
-    # Загружаем последний update_id
-    last_update_id = load_state()
-    if last_update_id:
-        logger.info(f"Загружен last_update_id: {last_update_id}")
-    else:
-        logger.info("Начинаем с последних сообщений")
-        # Получаем текущие обновления чтобы получить актуальный last_update_id
-        updates = get_updates()
-        if updates and updates.get('ok') and updates['result']:
-            last_update_id = updates['result'][-1]['update_id']
-            save_state(last_update_id)
-    
-    # Тестовое сообщение
+    # Тестовое сообщение (только один раз)
     send_message(ADMIN_CHAT_ID, "🟢 Бот запущен и готов к работе!")
+    
+    last_update_id = None
     
     while True:
         try:
@@ -227,10 +233,9 @@ def main():
                 for update in updates["result"]:
                     current_update_id = update["update_id"]
                     
-                    # Обновляем last_update_id
+                    # Обновляем last_update_id для следующего запроса
                     if last_update_id is None or current_update_id > last_update_id:
-                        last_update_id = current_update_id
-                        save_state(last_update_id + 1)  # Сохраняем следующий ID
+                        last_update_id = current_update_id + 1
                     
                     if "message" in update and "text" in update["message"]:
                         message = update["message"]
@@ -239,13 +244,9 @@ def main():
                         username = message["from"].get("username", "не указан")
                         first_name = message["from"].get("first_name", "не указано")
                         
-                        # Пропускаем старые сообщения
-                        if last_update_id and current_update_id <= last_update_id - 10:
-                            continue
-                            
-                        process_message(chat_id, text, username, first_name)
+                        process_message(chat_id, text, username, first_name, current_update_id)
             
-            time.sleep(0.5)  # Уменьшили паузу
+            time.sleep(0.5)
             
         except Exception as e:
             logger.error(f"Ошибка в основном цикле: {e}")
@@ -253,6 +254,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
 
