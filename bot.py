@@ -27,6 +27,11 @@ def validate_name(name):
 def validate_service(service):
     return 5 <= len(service.strip()) <= 100
 
+def escape_markdown(text):
+    """Экранирование символов Markdown"""
+    escape_chars = r'\_*[]()~`>#+-=|{}.!'
+    return ''.join(['\\' + char if char in escape_chars else char for char in text])
+
 def send_message(chat_id, text, parse_mode=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     data = {
@@ -90,30 +95,52 @@ def process_message(chat_id, text, username, first_name):
         user_data = user_states[chat_id]
         phone = text.strip()
         
-        application = f"""
-🎯 *НОВАЯ ЗАЯВКА*
+        # Экранируем данные пользователя для Markdown
+        safe_name = escape_markdown(user_data['name'])
+        safe_phone = escape_markdown(phone)
+        safe_service = escape_markdown(user_data['service'])
+        safe_username = escape_markdown(username)
+        safe_first_name = escape_markdown(first_name)
+        
+        # Формируем заявку с экранированием
+        application = f"""🎯 *НОВАЯ ЗАЯВКА*
 
-👤 *Клиент:* {user_data['name']}
-📱 *Телефон:* `{phone}`
-💼 *Услуга:* {user_data['service']}
-👤 *Telegram:* @{username} ({first_name})
+👤 *Клиент:* {safe_name}
+📱 *Телефон:* `{safe_phone}`
+💼 *Услуга:* {safe_service}
+👤 *Telegram:* @{safe_username} ({safe_first_name})
 🆔 *User ID:* `{chat_id}`
 ⏰ *Время:* {time.strftime('%d.%m.%Y %H:%M')}
 
-#заявка #клиент
-        """
+#заявка #клиент"""
         
         # Отправляем в канал
         channel_result = send_message(CHANNEL_ID, application, "Markdown")
         
-        # Уведомляем администратора
-        send_message(ADMIN_CHAT_ID, f"📨 Новая заявка от {user_data['name']}")
+        # Уведомляем администратора (без Markdown для надежности)
+        send_message(ADMIN_CHAT_ID, f"📨 Новая заявка от {safe_name}")
         
         if channel_result and channel_result.get('ok'):
             send_message(chat_id, "✅ *Спасибо! Ваша заявка принята!*\n\nМы свяжемся с вами в ближайшее время.", parse_mode="Markdown")
         else:
-            send_message(chat_id, "❌ *Ошибка отправки заявки.*\n\nПопробуйте позже.", parse_mode="Markdown")
-            logger.error(f"Ошибка отправки в канал: {channel_result}")
+            # Пробуем отправить без Markdown
+            application_plain = f"""🎯 НОВАЯ ЗАЯВКА
+
+👤 Клиент: {user_data['name']}
+📱 Телефон: {phone}
+💼 Услуга: {user_data['service']}
+👤 Telegram: @{username} ({first_name})
+🆔 User ID: {chat_id}
+⏰ Время: {time.strftime('%d.%m.%Y %H:%M')}
+
+#заявка #клиент"""
+            
+            channel_result_plain = send_message(CHANNEL_ID, application_plain)
+            if channel_result_plain and channel_result_plain.get('ok'):
+                send_message(chat_id, "✅ *Спасибо! Ваша заявка принята!*\n\nМы свяжемся с вами в ближайшее время.", parse_mode="Markdown")
+            else:
+                send_message(chat_id, "❌ *Ошибка отправки заявки.*\n\nПопробуйте позже.", parse_mode="Markdown")
+                logger.error(f"Ошибка отправки в канал: {channel_result}")
         
         user_states[chat_id] = None
 
