@@ -2,50 +2,18 @@ import logging
 import requests
 import re
 import time
-import flask
-import threading
-
-app = flask.Flask(__name__)
-
-@app.route('/')
-def home():
-    return "✅ Telegram Bot is running!"
-
-@app.route('/health')
-def health():
-    return "🟢 Bot is healthy"
-
-def run_web():
-    app.run(host='0.0.0.0', port=10000)
+import os
 
 # Настройки бота
 BOT_TOKEN = "8337387211:AAE8y9hJ4T8jq4-F3BqhAoGB9IdFVYmHLXg"
-CHANNEL_ID = "-1003377118326"  # Замените на цифровой ID вашего канала (начинается с -100)
-ADMIN_CHAT_ID = "951804313"
+CHANNEL_ID = "-1003377118326"  # Замените на цифровой ID вашего канала
+ADMIN_CHAT_ID = "951804313"  # Замените на ваш ID
 
 # Включение логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 user_states = {}
-
-def get_channel_id():
-    """Попытка определить ID канала"""
-    # Если CHANNEL_ID уже установлен, используем его
-    if CHANNEL_ID and CHANNEL_ID.startswith('-100'):
-        return CHANNEL_ID
-    
-    # Иначе пробуем получить через getUpdates
-    updates = get_updates()
-    if updates and updates.get('ok'):
-        for update in updates['result']:
-            if 'channel_post' in update:
-                channel_id = update['channel_post']['chat']['id']
-                logger.info(f"Найден ID канала: {channel_id}")
-                return str(channel_id)
-    
-    logger.error("Не удалось определить ID канала")
-    return None
 
 def validate_phone(phone):
     pattern = r'^(\+7|8)[\s\-]?\(?[489][0-9]{2}\)?[\s\-]?[0-9]{3}[\s\-]?[0-9]{2}[\s\-]?[0-9]{2}$'
@@ -122,12 +90,6 @@ def process_message(chat_id, text, username, first_name):
         user_data = user_states[chat_id]
         phone = text.strip()
         
-        # Получаем актуальный ID канала
-        channel_id = get_channel_id()
-        if not channel_id:
-            send_message(chat_id, "❌ *Ошибка канала.*\n\nПожалуйста, сообщите администратору.")
-            return
-        
         application = f"""
 🎯 *НОВАЯ ЗАЯВКА*
 
@@ -141,10 +103,11 @@ def process_message(chat_id, text, username, first_name):
 #заявка #клиент
         """
         
-        channel_result = send_message(channel_id, application, "Markdown")
+        # Отправляем в канал
+        channel_result = send_message(CHANNEL_ID, application, "Markdown")
         
-        admin_notification = f"📨 Новая заявка от {user_data['name']}"
-        send_message(ADMIN_CHAT_ID, admin_notification)
+        # Уведомляем администратора
+        send_message(ADMIN_CHAT_ID, f"📨 Новая заявка от {user_data['name']}")
         
         if channel_result and channel_result.get('ok'):
             send_message(chat_id, "✅ *Спасибо! Ваша заявка принята!*\n\nМы свяжемся с вами в ближайшее время.", parse_mode="Markdown")
@@ -159,20 +122,10 @@ def process_message(chat_id, text, username, first_name):
         send_message(chat_id, "❌ Заявка отменена")
 
 def main():
-    web_thread = threading.Thread(target=run_web)
-    web_thread.daemon = True
-    web_thread.start()
-    
     logger.info("Бот запущен!")
     
-    # Пытаемся определить ID канала при запуске
-    channel_id = get_channel_id()
-    if channel_id:
-        logger.info(f"Канал настроен: {channel_id}")
-        send_message(ADMIN_CHAT_ID, f"🟢 Бот запущен! Канал: {channel_id}")
-    else:
-        logger.warning("ID канала не определен")
-        send_message(ADMIN_CHAT_ID, "⚠️ Бот запущен, но ID канала не определен!")
+    # Тестовое сообщение
+    send_message(ADMIN_CHAT_ID, "🟢 Бот запущен и готов к работе!")
     
     last_update_id = None
     
@@ -201,6 +154,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
 
