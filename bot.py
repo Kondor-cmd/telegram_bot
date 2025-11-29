@@ -29,18 +29,13 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 user_states = {}
-processed_updates = set()  # Множество для отслеживания обработанных сообщений
 
 def validate_phone(phone):
     """Проверка номера телефона (без пробелов)"""
-    # Убираем все пробелы, скобки, дефисы
     clean_phone = re.sub(r'[\s\-\(\)\+]', '', phone.strip())
     
-    # Проверяем российские номера:
-    # +79991234567, 89991234567, 9991234567
     pattern = r'^(\+7|8)?[489][0-9]{9}$'
     
-    # Если номер без кода страны, добавляем 8
     if len(clean_phone) == 10 and clean_phone[0] in '489':
         clean_phone = '8' + clean_phone
     
@@ -50,18 +45,16 @@ def format_phone(phone):
     """Форматирует номер телефона для красивого отображения"""
     clean_phone = re.sub(r'[\s\-\(\)\+]', '', phone.strip())
     
-    # Если номер без кода страны, добавляем 8
     if len(clean_phone) == 10 and clean_phone[0] in '489':
         clean_phone = '8' + clean_phone
     
-    # Форматируем: +7 (999) 123-45-67
     if len(clean_phone) == 11:
         if clean_phone.startswith('8'):
             return f"+7 ({clean_phone[1:4]}) {clean_phone[4:7]}-{clean_phone[7:9]}-{clean_phone[9:]}"
         elif clean_phone.startswith('7'):
             return f"+7 ({clean_phone[1:4]}) {clean_phone[4:7]}-{clean_phone[7:9]}-{clean_phone[9:]}"
     
-    return phone  # Возвращаем как есть если не удалось отформатировать
+    return phone
 
 def validate_name(name):
     if len(name.strip()) < 2 or len(name.strip()) > 30:
@@ -96,7 +89,9 @@ def send_message(chat_id, text, parse_mode=None):
 
 def get_updates(offset=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-    params = {"timeout": 30, "offset": offset}
+    params = {"timeout": 30}
+    if offset:
+        params["offset"] = offset
         
     try:
         response = requests.get(url, params=params, timeout=35)
@@ -105,29 +100,22 @@ def get_updates(offset=None):
         logger.error(f"Ошибка получения обновлений: {e}")
         return None
 
-def process_message(chat_id, text, username, first_name, update_id):
-    # Пропускаем уже обработанные сообщения
-    if update_id in processed_updates:
+def process_message(chat_id, text, username, first_name):
+    # Пропускаем команды бота
+    if text.startswith('/'):
+        if text == "/start":
+            send_message(chat_id, "👋 Привет! Я бот для приема заявок на услуги.\nНапишите 'заявка' чтобы оставить заявку")
+            user_states[chat_id] = None
+        elif text == "/cancel":
+            user_states[chat_id] = None
+            send_message(chat_id, "❌ Заявка отменена")
         return
-        
-    # Добавляем в обработанные
-    processed_updates.add(update_id)
     
-    # Ограничиваем размер множества (чтобы не росло бесконечно)
-    if len(processed_updates) > 1000:
-        # Оставляем только последние 500
-        global processed_updates
-        processed_updates = set(list(processed_updates)[-500:])
-    
-    # Пропускаем служебные команды от самого бота
+    # Пропускаем служебные сообщения
     if any(emoji in text for emoji in ["✅", "❌", "📝", "💼", "📞", "👋"]):
         return
         
-    if text == "/start":
-        send_message(chat_id, "👋 Привет! Я бот для приема заявок на услуги.\nНапишите 'заявка' чтобы оставить заявку")
-        user_states[chat_id] = None
-    
-    elif text.lower() in ["заявка", "/order"]:
+    if text.lower() in ["заявка", "order"]:
         send_message(chat_id, "📝 *Как вас зовут?*\n\nУкажите ваше имя и фамилию", parse_mode="Markdown")
         user_states[chat_id] = "waiting_name"
     
@@ -208,7 +196,7 @@ def process_message(chat_id, text, username, first_name, update_id):
         
         user_states[chat_id] = None
 
-    elif text.lower() in ["отмена", "cancel", "/cancel"]:
+    elif text.lower() in ["отмена", "cancel"]:
         user_states[chat_id] = None
         send_message(chat_id, "❌ Заявка отменена")
 
@@ -220,22 +208,28 @@ def main():
     
     logger.info("Бот запущен! Веб-сервер работает на порту 10000")
     
+    # Получаем последние обновления при старте
+    updates = get_updates()
+    if updates and updates.get("ok") and updates["result"]:
+        # Берем самый последний update_id
+        last_update_id = updates["result"][-1]["update_id"]
+        logger.info(f"Начинаем с update_id: {last_update_id}")
+    else:
+        last_update_id = None
+        logger.info("Начинаем с чистого листа")
+    
     # Тестовое сообщение (только один раз)
     send_message(ADMIN_CHAT_ID, "🟢 Бот запущен и готов к работе!")
     
-    last_update_id = None
-    
     while True:
         try:
-            updates = get_updates(last_update_id)
+            # Всегда запрашиваем обновления с последнего известного ID + 1
+            updates = get_updates(last_update_id + 1 if last_update_id else None)
             
             if updates and updates.get("ok") and updates["result"]:
                 for update in updates["result"]:
                     current_update_id = update["update_id"]
-                    
-                    # Обновляем last_update_id для следующего запроса
-                    if last_update_id is None or current_update_id > last_update_id:
-                        last_update_id = current_update_id + 1
+                    last_update_id = current_update_id  # Обновляем последний ID
                     
                     if "message" in update and "text" in update["message"]:
                         message = update["message"]
@@ -244,9 +238,10 @@ def main():
                         username = message["from"].get("username", "не указан")
                         first_name = message["from"].get("first_name", "не указано")
                         
-                        process_message(chat_id, text, username, first_name, current_update_id)
+                        logger.info(f"Обрабатываем сообщение: {text[:50]}... от {username}")
+                        process_message(chat_id, text, username, first_name)
             
-            time.sleep(0.5)
+            time.sleep(1)
             
         except Exception as e:
             logger.error(f"Ошибка в основном цикле: {e}")
@@ -254,6 +249,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
 
