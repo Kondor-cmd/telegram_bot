@@ -2,7 +2,24 @@ import logging
 import requests
 import re
 import time
+from flask import Flask
+import threading
+import json
 import os
+
+# Создаем Flask приложение для порта
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "✅ Telegram Bot is running!"
+
+@app.route('/health')
+def health():
+    return "🟢 Bot is healthy"
+
+def run_web():
+    app.run(host='0.0.0.0', port=10000)
 
 # Настройки бота
 BOT_TOKEN = "8337387211:AAE8y9hJ4T8jq4-F3BqhAoGB9IdFVYmHLXg"
@@ -14,6 +31,28 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 user_states = {}
+
+# Файл для сохранения last_update_id
+STATE_FILE = "bot_state.json"
+
+def save_state(last_update_id):
+    """Сохраняет состояние бота"""
+    try:
+        with open(STATE_FILE, 'w') as f:
+            json.dump({"last_update_id": last_update_id}, f)
+    except Exception as e:
+        logger.error(f"Ошибка сохранения состояния: {e}")
+
+def load_state():
+    """Загружает состояние бота"""
+    try:
+        if os.path.exists(STATE_FILE):
+            with open(STATE_FILE, 'r') as f:
+                state = json.load(f)
+                return state.get("last_update_id", None)
+    except Exception as e:
+        logger.error(f"Ошибка загрузки состояния: {e}")
+    return None
 
 def validate_phone(phone):
     pattern = r'^(\+7|8)[\s\-]?\(?[489][0-9]{2}\)?[\s\-]?[0-9]{3}[\s\-]?[0-9]{2}[\s\-]?[0-9]{2}$'
@@ -29,8 +68,10 @@ def validate_service(service):
 
 def escape_markdown(text):
     """Экранирование символов Markdown"""
+    if not text:
+        return ""
     escape_chars = r'\_*[]()~`>#+-=|{}.!'
-    return ''.join(['\\' + char if char in escape_chars else char for char in text])
+    return ''.join(['\\' + char if char in escape_chars else char for char in str(text)])
 
 def send_message(chat_id, text, parse_mode=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
@@ -42,7 +83,7 @@ def send_message(chat_id, text, parse_mode=None):
         data["parse_mode"] = parse_mode
         
     try:
-        response = requests.post(url, data=data)
+        response = requests.post(url, data=data, timeout=10)
         return response.json()
     except Exception as e:
         logger.error(f"Ошибка отправки сообщения: {e}")
@@ -50,15 +91,22 @@ def send_message(chat_id, text, parse_mode=None):
 
 def get_updates(offset=None):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-    params = {"timeout": 30, "offset": offset}
+    params = {"timeout": 30}
+    if offset:
+        params["offset"] = offset
+        
     try:
-        response = requests.get(url, params=params)
+        response = requests.get(url, params=params, timeout=35)
         return response.json()
     except Exception as e:
         logger.error(f"Ошибка получения обновлений: {e}")
         return None
 
 def process_message(chat_id, text, username, first_name):
+    # Пропускаем служебные команды от самого бота
+    if "✅" in text or "❌" in text or "📝" in text or "💼" in text or "📞" in text:
+        return
+        
     if text == "/start":
         send_message(chat_id, "👋 Привет! Я бот для приема заявок на услуги.\nНапишите 'заявка' чтобы оставить заявку")
         user_states[chat_id] = None
@@ -99,8 +147,8 @@ def process_message(chat_id, text, username, first_name):
         safe_name = escape_markdown(user_data['name'])
         safe_phone = escape_markdown(phone)
         safe_service = escape_markdown(user_data['service'])
-        safe_username = escape_markdown(username)
-        safe_first_name = escape_markdown(first_name)
+        safe_username = escape_markdown(username if username else "не указан")
+        safe_first_name = escape_markdown(first_name if first_name else "не указано")
         
         # Формируем заявку с экранированием
         application = f"""🎯 *НОВАЯ ЗАЯВКА*
@@ -117,7 +165,7 @@ def process_message(chat_id, text, username, first_name):
         # Отправляем в канал
         channel_result = send_message(CHANNEL_ID, application, "Markdown")
         
-        # Уведомляем администратора (без Markdown для надежности)
+        # Уведомляем администратора
         send_message(ADMIN_CHAT_ID, f"📨 Новая заявка от {safe_name}")
         
         if channel_result and channel_result.get('ok'):
@@ -149,20 +197,40 @@ def process_message(chat_id, text, username, first_name):
         send_message(chat_id, "❌ Заявка отменена")
 
 def main():
-    logger.info("Бот запущен!")
+    # Запускаем веб-сервер в отдельном потоке
+    web_thread = threading.Thread(target=run_web)
+    web_thread.daemon = True
+    web_thread.start()
+    
+    logger.info("Бот запущен! Веб-сервер работает на порту 10000")
+    
+    # Загружаем последний update_id
+    last_update_id = load_state()
+    if last_update_id:
+        logger.info(f"Загружен last_update_id: {last_update_id}")
+    else:
+        logger.info("Начинаем с последних сообщений")
+        # Получаем текущие обновления чтобы получить актуальный last_update_id
+        updates = get_updates()
+        if updates and updates.get('ok') and updates['result']:
+            last_update_id = updates['result'][-1]['update_id']
+            save_state(last_update_id)
     
     # Тестовое сообщение
     send_message(ADMIN_CHAT_ID, "🟢 Бот запущен и готов к работе!")
-    
-    last_update_id = None
     
     while True:
         try:
             updates = get_updates(last_update_id)
             
-            if updates and updates.get("ok"):
+            if updates and updates.get("ok") and updates["result"]:
                 for update in updates["result"]:
-                    last_update_id = update["update_id"] + 1
+                    current_update_id = update["update_id"]
+                    
+                    # Обновляем last_update_id
+                    if last_update_id is None or current_update_id > last_update_id:
+                        last_update_id = current_update_id
+                        save_state(last_update_id + 1)  # Сохраняем следующий ID
                     
                     if "message" in update and "text" in update["message"]:
                         message = update["message"]
@@ -171,9 +239,13 @@ def main():
                         username = message["from"].get("username", "не указан")
                         first_name = message["from"].get("first_name", "не указано")
                         
+                        # Пропускаем старые сообщения
+                        if last_update_id and current_update_id <= last_update_id - 10:
+                            continue
+                            
                         process_message(chat_id, text, username, first_name)
             
-            time.sleep(1)
+            time.sleep(0.5)  # Уменьшили паузу
             
         except Exception as e:
             logger.error(f"Ошибка в основном цикле: {e}")
@@ -181,6 +253,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
 
