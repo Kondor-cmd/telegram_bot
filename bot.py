@@ -20,9 +20,9 @@ def run_web():
     app.run(host='0.0.0.0', port=10000)
 
 # Настройки бота
-BOT_TOKEN = "8337387211:AAE8y9hJ4T8jq4-F3BqhAoGB9IdFVYmHLXg"
-CHANNEL_ID = "-1003377118326"  # Замените на цифровой ID вашего канала
-ADMIN_CHAT_ID = "951804313"  # Замените на ваш ID
+BOT_TOKEN = ""
+CHANNEL_ID = ""  # Замените на цифровой ID вашего канала
+ADMIN_CHAT_ID = ""  # Замените на ваш ID
 
 # Включение логирования
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -249,6 +249,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
 
